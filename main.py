@@ -5,7 +5,9 @@ For answert returnig we will use the GET /chat maybe
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import re
 from typing import Any, List, Optional
+from agent import Agent
 
 
 app = FastAPI(
@@ -24,10 +26,19 @@ class ChatRequest(BaseModel):
     """This class defines the structure of incoming chat message"""
     query: str
 
+class AgentStep(BaseModel):
+    """This class defines the stepwise process the AI agent will take for the result"""
+    step: int
+    action: str
+    tool: Optional[str] = None
+    input: Optional[dict] = None
+    result: Optional[Any] = None
 
 class ChatResponse(BaseModel):
     """This class is to define the response structure given by the agent"""
     answer: str
+    steps: List[AgentStep]
+    iterations: int
 
 #Endpoints
 @app.get("/")
@@ -40,6 +51,7 @@ def root():
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
+    """This endpoint will receive the query and return the answer from the agent after reviewing the knowledge base"""
     try: 
         answer = f"Query: {request.query}"
         return ChatResponse(answer=answer)
