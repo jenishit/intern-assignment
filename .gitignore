@@ -1,0 +1,24 @@
+# Dependencies
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Build outputs
+out/
+bin/
+lib/
+

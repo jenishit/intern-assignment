@@ -5,9 +5,7 @@ For answert returnig we will use the GET /chat maybe
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import re
 from typing import Any, List, Optional
-from agent import Agent
 
 
 app = FastAPI(
@@ -17,7 +15,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )

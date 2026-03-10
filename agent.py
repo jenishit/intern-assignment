@@ -4,8 +4,20 @@ import json
 import os
 import re
 from typing import Any
-from tools/tools import get_order_details
-from tools/rag import retrieve_policy
+from langchain_core.messages import (
+    AIMessage,
+    ToolMessage,
+)
+from langchain_core.tools import tool
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+from tools import get_order_details, get_customer_profile
+from tools import retrieve_policy
+
+
+DEFAULT_MODEL = os.environ.get("MODEL", "gemini-2.5-flash")
+
+TOOL_REGISTRY = [get_order_details, get_customer_profile]
 
 TOOL_DEFINITIONS = [
     {
@@ -100,6 +112,76 @@ PROMPT = """
     If you don't have enough information to answer the question, use the tools to gather more information before answering.
     Always complete your reasoning Before giving a final answer.
 """
+
+def _run_tool(tool_name: str, tool_input: dict) -> Any:
+    """Run a tool call to the correct function and return result as JSON result."""
+    if tool_name == "retrieve_policy":
+        result = retrieve_policy(**tool_input)
+    elif tool_name in TOOL_REGISTRY:
+        result =  TOOL_REGISTRY[tool_name](**tool_input)
+    else:
+        result = {"error": f"Unknown tool: {tool_name}"}
+    return json.dumps(result, indent=2)
+
+def run_agent(
+        query: str,
+        max_itr: int = 10,
+        chat_history: list[dict] | None = None,
+        model: str | None = None, 
+) -> dict:
+    """Run the agentic loop for a user query"""
+    #Select the model
+    llm = ChatGoogleGenerativeAI(model or DEFAULT_MODEL, temperature=0.3, max_tokens=1024)
+    llm_with_tools = llm.bind_tools(TOOL_DEFINITIONS, _run_tool)
+    messages = [{"role": "system", "content": PROMPT}]
+
+    if chat_history:
+        messages.extend(chat_history)
+
+    messages.append({"role": "user", "content": query})
+
+    steps = []
+    for i in range(max_itr):
+        response : AIMessage = llm_with_tools.invoke(messages)
+
+        if not response.tool_calls:
+            return {
+                "answer": response.content,
+                "steps": steps,
+                "iterations": i + 1,
+            }
+        
+        messages.append({"role": "assistant", "content": response.content})
+
+        for tool_call in response.tool_calls:
+            tool_name = tool_call["name"]
+            tool_args = tool_call["args"]
+            tool_call_id = tool_call["id"]
+
+            steps.append({
+                "step": i + 1,
+                "tool": tool_name,
+                "input": tool_args,
+            })
+
+            if tool_name in TOOL_REGISTRY or tool_name == "retrieve_policy":
+                result_str = _run_tool(tool_name, tool_args)
+            else:
+                result_str = json.dumps({"error": f"Unknown tool: {tool_name}"}, indent=2)
+            
+            try:
+                steps[-1]["result"] = json.loads(result_str)
+            except (json.JSONDecodeError, TypeError):
+                steps[-1]["result"] = {"raw": str(result_str)}
+
+            messages.append(
+                ToolMessage(content=result_str, tool_call_id=tool_call_id)
+            )
+    return {
+        "answer": "Agent reached maximum iterations without completing.",
+        "steps": steps,
+        "iterations": max_itr,
+    }
 
 class Agent:
     def __init__(self, request: str):
