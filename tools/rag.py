@@ -41,6 +41,7 @@ def _compute_tf(tokens: List[str]) -> dict:
 
 
 class TFIDFRetriever:
+    """This is an implmentation fo a simple TF-IDF based retriever."""
     def __init__(self, documents: List[dict]):
         self.documents = documents
         self.doc_tokens : List[List[str]] = []
