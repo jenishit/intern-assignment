@@ -10,18 +10,18 @@ POLICY_DOCUMENTS = [
     {
         "id": "standard_return_policy",
         "content": (
-            "Standard customers have a 30-day return window"
-            "If a Standard customer's order gets delayed, they get a $20 credit as compensation"
-            "The return window starts from the day of delivery"
+            "Standard customers have a 30-day return window. "
+            "If a Standard customer's order gets delayed, they get a $20 credit as compensation. "
+            "The return window starts from the day of delivery."
         ),
         "metadata": {"category": "return_policy", "tier": "Standard"},
     },
     {
         "id": "vip_return_policy",
         "content": (
-            "VIP customers have a 60-day return window"
-            "If a VIP customer's order gets delayed or receive any damage, they get a full refund as compensation - no questions asked"
-            "The return window starts from the day of delivery"
+            "VIP customers have a 60-day return window. "
+            "If a VIP customer's order gets delayed or receive any damage, they get a full refund as compensation - no questions asked. "
+            "The return window starts from the day of delivery."
         ),
         "metadata": {"category": "return_policy", "tier": "VIP"},
     },

@@ -4,3 +4,4 @@ langchain-google-genai
 python-dotenv
 langchain-core
 langchain-community
+ollama

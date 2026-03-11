@@ -4,17 +4,10 @@ import json
 import os
 import re
 from typing import Any
-from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.tools import tool
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.chat_models import ChatOllama
 
 from tools.tools import get_order_details, get_customer_profile
 from tools.rag import retrieve_policy
-
-
-DEFAULT_MODEL = os.environ.get("MODEL", "gemma3:4b")
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+from llm_providers import get_llm
 
 TOOL_REGISTRY = {
     "get_order_details": get_order_details,
@@ -28,7 +21,7 @@ TOOL_DEFINITIONS = [
             "name": "get_order_details",
             "description": (
                 "Look up a specific order in the CRM by order ID."
-                "Use this when the user references an order number (e.g. 'Order #8892)."
+                "Use this when the user references an order number (e.g. 'Order #8892' or '#8892' or '8892' or 'order status of #8892' or 'order status of 8892' )."
                 "Returns: customer type (VIP/Standard), delivery status, days since delivery, "
                 "item name, and order amount. "
                 "Do not use this for policy questions - use retrieve_policy instead."    
@@ -94,27 +87,30 @@ TOOL_DEFINITIONS = [
 
 #Master prompt for the agent
 PROMPT = """
-    You are a helpful customer service AI agent with access to:
-    1. CRM tools to look up specific order and customer data
-    2. A policy knowledge base for rules about returns and refunds
+You are a concise customer service AI agent.
 
-    Your Behaviour:
-    - Always look up relevant order data FIRST when an order number is mentioned
-    - After getting order details, check the policy knowledge base to answer policy questions
-    - Be specific: quote exact numbers (days, dollar amounts) from both the CRM and the policy
-    - If an order doesn't exist, report clearly and concisely that you could not find the order
-    - Keep answers concise and factual without unnecessary elaboration
+Rules:
+- Answer ONLY with the facts from the tool results provided.
+- Do NOT add explanations, caveats, disclaimers, or extra commentary.
+- Keep your answer to 2-4 short sentences maximum.
+- Quote exact numbers (days, amounts) from the data.
+- If an order is not found, say so in one sentence.
 
-    Decision Rule:
-    - Use get_order_details() for -> specific order information (status, customer type, delivery date or processing date)
-    - If you find the answer to the user's question in the order details, use that and stop rightaway. If not, then:
-    - Use retrieve_policy() only if there is a question about policy for -> rules, return window, refund eligibility questions
-    - Use get_customer_profile() for -> detailed customer tier information (perks, support level, return policy differences)
-
-    Always follow the decision rule above to decide which tool to use.
-    If you don't have enough information to answer the question, use the tools to gather more information before answering.
-    Always complete your reasoning Before giving a final answer.
+Format your answer as plain facts, not a conversation.
 """
+
+POLICY_KEYWORDS = [
+    "policy", "return", "refund", "eligible", "eligibility",
+    "can i return", "can the customer return", "can they return",
+    "compensation", "return window", "based on policy",
+]
+
+
+def _needs_policy(query: str) -> bool:
+    """Return True only if the user is asking about policy / returns / refunds."""
+    q = query.lower()
+    return any(kw in q for kw in POLICY_KEYWORDS)
+
 
 def _run_tool(tool_name: str, tool_input: dict) -> Any:
     """Run a tool call to the correct function and return result as JSON result."""
@@ -126,40 +122,28 @@ def _run_tool(tool_name: str, tool_input: dict) -> Any:
         result = {"error": f"Unknown tool: {tool_name}"}
     return json.dumps(result, indent=2)
 
+
 def run_agent(
         query: str,
         max_itr: int = 10,
         chat_history: list[dict] | None = None,
-        model: str | None = None, 
 ) -> dict:
     """Run the agentic loop for a user query."""
 
-    # local Ollama 
-    llm = ChatOllama(
-        model=model or DEFAULT_MODEL,
-        base_url=OLLAMA_BASE_URL,
-        temperature=0.3,
-        num_predict=1024,
-    )
+    llm = get_llm()
 
-    # Gemini Google API
-    # llm = ChatGoogleGenerativeAI(
-    #     model="gemini-1.5-flash",
-    #     temperature=0.3,
-    # )
-    
-    # Simple orchestration: Get order, then get policy
-    steps = []
-    order_id_match = re.search(r"order\s*#?\s*(\d+)", query, re.IGNORECASE)
-    
+    steps: list[dict] = []
+    order_id_match = re.search(r"#\s*(\d+)", query) or re.search(r"order\s+.*?(\d{4,})", query, re.IGNORECASE)
+
     messages = [{"role": "system", "content": PROMPT}]
-    
+
     if chat_history:
         messages.extend(chat_history)
 
     if order_id_match:
         order_id = order_id_match.group(1)
-        
+
+        # Step 1 — always fetch order details when an order ID is present
         order_data = get_order_details(order_id)
         steps.append({
             "step": 1,
@@ -167,8 +151,9 @@ def run_agent(
             "input": {"order_id": order_id},
             "result": order_data,
         })
-        
-        if "error" not in order_data:
+
+        if "error" not in order_data and _needs_policy(query):
+            # Step 2 — fetch policy ONLY when user asks about policy/return/refund
             customer_type = order_data.get("customer_type", "Standard")
             policy_data = retrieve_policy(f"{customer_type} return window")
             steps.append({
@@ -177,23 +162,48 @@ def run_agent(
                 "input": {"query": f"{customer_type} return window"},
                 "result": policy_data,
             })
-            
+
             messages.append({
                 "role": "user",
                 "content": (
                     f"{query}\n\n"
-                    f"Tool Results for Reference:\n"
+                    f"Tool Results:\n"
                     f"1. Order Data: {json.dumps(order_data, indent=2)}\n"
-                    f"2. Policy Context: {policy_data.get('context', 'No policy found')}\n\n"
-                    f"Please answer the original query using these tool results."
+                    f"2. Policy: {policy_data.get('context', 'No policy found')}\n\n"
+                    f"Answer concisely using ONLY these tool results."
+                ),
+            })
+        elif "error" not in order_data:
+            # Order found, no policy needed — answer from order data only
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"{query}\n\n"
+                    f"Tool Result:\n"
+                    f"Order Data: {json.dumps(order_data, indent=2)}\n\n"
+                    f"Answer concisely using ONLY this tool result."
                 ),
             })
         else:
-            messages.append({"role": "user", "content": query})
+            # Order not found
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"{query}\n\n"
+                    f"Tool Result:\n"
+                    f"{json.dumps(order_data)}\n\n"
+                    f"Report that the order was not found."
+                ),
+            })
     else:
-        messages.append({"role": "user", "content": query})
-    
-    # Get response from the selected LLM and return structured result
+        # No order ID found — return a hard "no data found" instead of hallucinating
+        return {
+            "answer": "No order ID was found in your query. Please provide a valid order number (e.g. #8892).",
+            "steps": [],
+            "iterations": 0,
+        }
+
+    # Get response from the LLM
     response = llm.invoke(messages)
     answer = response.content
 
@@ -202,52 +212,3 @@ def run_agent(
         "steps": steps,
         "iterations": len(steps) if steps else 1,
     }
-
-class Agent:
-    def __init__(self, request: str):
-        self.request = request
-
-    def extract_order_id(self):
-        """Extract order ID from the request using regex"""
-        pattern = r"order\s*#?\s*(\d+)"
-        match = re.search(pattern, self.request, re.IGNORECASE)
-        if match:
-            return match.group(1)
-        return ""
-    
-    def agent_logic(self):
-        order_id = self.extract_order_id()
-
-        if not order_id:
-            return "Sorry, I couldn't find an order ID in your request. Please provide a valid order ID."
-        
-        order = get_order_details(order_id)
-
-        if not order or "error" in order:
-            return f"Sorry, I couldn't find any details for order ID {order_id}."
-        
-        policy = retrieve_policy(order.get("customer_type", "Standard"))
-
-        customer_type = order["customer_type"]
-        status = order["status"]
-        days = order.get("days_since_delivery", 0) or 0
-
-        if customer_type == "VIP":
-            return_window = 60
-        else:
-            return_window = 30
-
-        if days <= return_window:
-            return_eligible = "Yes"
-        else:
-            return_eligible = "No"
-        
-        return f"""
-                Order {order_id} status: {status}.
-                Customer type: {customer_type}.
-                Delivered {days} days ago.
-
-                Policy: {json.dumps(policy)}
-
-                Return eligible: {return_eligible}.
-        """
