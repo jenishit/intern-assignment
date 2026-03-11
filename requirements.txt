@@ -5,3 +5,4 @@ python-dotenv
 langchain-core
 langchain-community
 ollama
+httpie

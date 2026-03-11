@@ -195,13 +195,31 @@ def run_agent(
                     f"Report that the order was not found."
                 ),
             })
+    elif _needs_policy(query):
+        # No order ID but it's a policy question — answer with policy rag only
+        policy_data = retrieve_policy(query)
+        steps.append({
+            "step": 1,
+            "tool": "retrieve_policy",
+            "input": {"query": query},
+            "result": policy_data,
+        })
+        
+        messages.append({
+            "role": "user",
+            "content": (
+                f"{query}\n\n"
+                f"Tool Result:\n"
+                f"Policy: {policy_data.get('context', 'No policy found')}\n\n"
+                f"Answer concisely using ONLY this tool result."
+            ),
+        })
     else:
-        # No order ID found — return a hard "no data found" instead of hallucinating
-        return {
-            "answer": "No order ID was found in your query. Please provide a valid order number (e.g. #8892).",
-            "steps": [],
-            "iterations": 0,
-        }
+        # No order ID and not a policy question — allow general conversation
+        messages.append({
+            "role": "user",
+            "content": query,
+        })
 
     # Get response from the LLM
     response = llm.invoke(messages)
