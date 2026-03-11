@@ -30,38 +30,92 @@ POLICY_DOCUMENTS = [
 def _tokenize(text: str) -> List[str]:
     """Split sentence into tokens"""
     text = text.lower()
-    text = text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return [t for t in text.split() if len(t) > 1]
+
+def _compute_tf(tokens: List[str]) -> dict:
+    """Compute term frequency for a list of tokens"""
+    counts = Counter(tokens)
+    total = len(tokens) if tokens else 1
+    return {term: count / total for term, count in counts.items()}
+
+
+class TFIDFRetriever:
+    def __init__(self, documents: List[dict]):
+        self.documents = documents
+        self.doc_tokens : List[List[str]] = []
+        self.doc_tfs : List[dict] = []
+        self.idf : dict = {}
+        self._build_index()
+
+    def _build_index(self):
+        N = len(self.documents)
+
+        for doc in self.documents:
+            tokens = _tokenize(doc["content"])
+            self.doc_tokens.append(tokens)
+            self.doc_tfs.append(_compute_tf(tokens))
+        
+        df: dict = Counter()
+        for tokens in self.doc_tokens:
+            for term in set(tokens):
+                df[term] += 1
+
+        self.idf = {
+            term: math.log((N + 1) / (count + 1)) + 1
+            for term, count in df.items()
+        }
+
+    def _tfidf_score(self, query_tokens: List[str], doc_idx: int) -> float:
+        doc_tf = self.doc_tfs[doc_idx]
+        score = 0.0
+
+        for term in query_tokens:
+            if term in doc_tf and term in self.idf:
+                score += doc_tf[term] * self.idf[term]
+
+        return score / (len(query_tokens) + 1)
     
+    def retrieve(self, query: str, top_k: int = 2) -> List[dict]:
+        query_tokens = _tokenize(query)
+        
+        scored: List[Tuple[float, int]] = []
+        for i in range(len(self.documents)):
+            score = self._tfidf_score(query_tokens, i)
+            scored.append((score, i))
 
-# try:
-#     from langchain_community.vectorstores import FAISS
-#     from langchain_google_genai import GoogleGenerativeAIEmbeddings
-#     from langchain_core.documents import Document
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[:top_k]
 
-#     def _build_faiss_index():
-#         docs = [
-#             Document(page_content=p["content"], metadata=p["metadata"])
-#             for p in POLICY_DOCUMENTS
-#         ]
-#         # Use a currently supported Google Gemini embedding model
-#         # older model names like "models/embedding-001" are no longer valid
-#         embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-3-large")
-#         return FAISS.from_documents(docs, embedding=embeddings)
+        results = []
+        for score, idx in top:
+            if score > 0:
+                results.append({
+                    "title": self.documents[idx]["id"],
+                    "text": self.documents[idx]["content"],
+                    "relevance_score": round(score, 4),
+                })
 
-#     _FAISS_INDEX = _build_faiss_index()
+        return results
 
-#     def retrieve_policy(query: str, top_k: int = 2) -> dict:
-#         # perform similarity search over the pre-built FAISS index
-#         results = _FAISS_INDEX.similarity_search(query, k=top_k)
-#         context_str = "\\n\\n".join(
-#             f"[Policy Chunk {i+1}]\\n{r.page_content}"
-#             for i, r in enumerate(results)
-#         )
-#         return {
-#             "query": query,
-#             "results": [{"content": r.page_content, "metadata": r.metadata} for r in results],
-#             "context": context_str,
-#         }
+_retriever = TFIDFRetriever(POLICY_DOCUMENTS)
 
-# except ImportError:
-#     pass  # Fallback to keyword retriever above
+def retrieve_policy(query: str, top_k: int = 2) -> dict:
+    results = _retriever.retrieve(query, top_k=top_k)
+
+    if not results:
+        return {
+            "success": False,
+            "error": "No relevant policy found for that query.",
+            "context": "",
+        }
+
+    context_parts = []
+    for r in results:
+        context_parts.append(f"[{r['title']}]\n{r['text']}")
+
+    return {
+        "success": True,
+        "results": results,
+        "context": "\n\n".join(context_parts),
+    }

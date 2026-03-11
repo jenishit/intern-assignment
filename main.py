@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, List, Optional
+from agent import run_agent
 
 
 app = FastAPI(
@@ -27,7 +28,6 @@ class ChatRequest(BaseModel):
 class AgentStep(BaseModel):
     """This class defines the stepwise process the AI agent will take for the result"""
     step: int
-    action: str
     tool: Optional[str] = None
     input: Optional[dict] = None
     result: Optional[Any] = None
@@ -50,9 +50,17 @@ def root():
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
     """This endpoint will receive the query and return the answer from the agent after reviewing the knowledge base"""
-    try: 
-        answer = f"Query: {request.query}"
-        return ChatResponse(answer=answer)
+    try:
+        result = run_agent(request.query)
+        
+        # Convert agent steps to AgentStep models
+        steps = [AgentStep(**step) for step in result["steps"]]
+        
+        return ChatResponse(
+            answer=result["answer"],
+            steps=steps,
+            iterations=result["iterations"]
+        )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
